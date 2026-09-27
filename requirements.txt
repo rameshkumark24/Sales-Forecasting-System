@@ -1,5 +1,11 @@
-streamlit
-pandas
-scikit-learn
-joblib
-xgboost
+# Runtime dependencies (Python 3.11+).
+# scikit-learn is pinned exactly: models/forecast_models.joblib is a pickle and
+# is only guaranteed to load on the version that saved it. If you change it,
+# retrain with `python src/train_cluster_models.py` (the app also retrains
+# automatically when the versions differ).
+scikit-learn==1.9.1
+pandas>=2.2,<4
+numpy>=2,<3
+joblib>=1.4
+streamlit>=1.51,<2
+altair>=5.4,<7
