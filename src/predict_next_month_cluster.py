@@ -1,70 +1,62 @@
-import pandas as pd
-import joblib
+"""Forecast next-month sales for every store with the saved models.
 
-df = pd.read_csv("../data/processed/features_with_clusters.csv", parse_dates=["date"])
+Usage (from any directory, after training):
+    python src/predict_next_month_cluster.py
+"""
 
-df = df.sort_values(by=["store_id", "date"])
+from __future__ import annotations
 
-latest_df = (
-    df.groupby("store_id")
-      .tail(1)
-      .reset_index(drop=True)
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+from sales_forecasting import (
+    IncompatibleModelsError,
+    config,
+    forecast_next_month,
+    load_artifacts,
 )
 
-print("Latest rows per store:")
-print(latest_df[["store_id", "date", "sales", "cluster"]].head())
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--processed-dir", type=Path, default=config.PROCESSED_DIR)
+    parser.add_argument("--models-dir", type=Path, default=config.MODELS_DIR)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=f"output CSV (default: <processed-dir>/{config.FORECAST_FILE})",
+    )
+    return parser.parse_args()
 
 
-feature_cols = [c for c in df.columns if c not in ["sales", "date", "cluster"]]
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    args = parse_args()
 
-print("Using features:")
-print(feature_cols)
-
-
-clusters = sorted(df["cluster"].unique())
-all_forecasts = []
-
-for cl in clusters:
-    model_path = f"../models/xgb_cluster_{cl}.pkl"
-    print(f"\n🔹 Processing cluster {cl} with model {model_path}")
-    
     try:
-        model_c = joblib.load(model_path)
-    except FileNotFoundError:
-        print(f"  ⚠️ Model file not found for cluster {cl}, skipping.")
-        continue
-    
+        artifacts = load_artifacts(args.processed_dir, args.models_dir)
+    except (FileNotFoundError, IncompatibleModelsError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
-    subset = latest_df[latest_df["cluster"] == cl].copy()
-    if subset.empty:
-        print("  ⚠️ No stores in this cluster for prediction, skipping.")
-        continue
-    
-    X_pred = subset[feature_cols]
-    
-   
-    preds = model_c.predict(X_pred)
-    
-    subset["forecast_sales"] = preds
-    subset["cluster"] = cl
-    
-    all_forecasts.append(subset)
-if not all_forecasts:
-    raise ValueError("No forecasts were generated. Check cluster assignments and models.")
+    forecast = forecast_next_month(artifacts)
+    output = args.output or args.processed_dir / config.FORECAST_FILE
+    output.parent.mkdir(parents=True, exist_ok=True)
+    forecast.to_csv(output, index=False, date_format="%Y-%m-%d")
 
-forecast_df = pd.concat(all_forecasts, ignore_index=True)
+    month = forecast["forecast_month"].max().strftime("%B %Y")
+    total = forecast["forecast_sales"].sum()
+    last_total = forecast["last_month_sales"].sum()
+    print(f"\nForecast for {month}: {len(forecast)} stores")
+    print(f"Total forecast: ${total:,.0f} (last month: ${last_total:,.0f})")
+    print("\nSample:")
+    print(forecast.head().to_string(index=False))
+    print(f"\nSaved forecast to {output}")
+    return 0
 
-last_date = df["date"].max()
-forecast_month = last_date + pd.offsets.MonthEnd(1)
 
-forecast_df["forecast_month"] = forecast_month
-
-forecast_df = forecast_df[["store_id", "cluster", "date", "sales", "forecast_month", "forecast_sales"]]
-forecast_df = forecast_df.rename(columns={"sales": "last_month_sales"})
-
-print("\nSample of final forecast output:")
-print(forecast_df.head())
-
-output_path = "../data/processed/next_month_forecast_cluster.csv"
-forecast_df.to_csv(output_path, index=False)
-print(f"\n✅ Saved next-month cluster-wise forecast to {output_path}")
+if __name__ == "__main__":
+    sys.exit(main())
